@@ -1,0 +1,14 @@
+fastapi==0.141.1
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.51
+pydantic==2.10.6
+pydantic-settings==2.7.1
+python-jose[cryptography]==3.3.0
+bcrypt==4.2.1
+python-multipart==0.0.20
+langchain-anthropic==0.3.3
+langgraph==0.2.62
+psycopg2-binary==2.9.10
+redis==5.2.1
+python-dotenv==1.0.1
+httpx==0.28.1

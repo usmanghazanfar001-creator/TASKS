@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.db
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Env files
+.env
+!.env.example
+
+# OS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Test artifacts
+.pytest_cache/
+
+# Uploaded product photos (local testing)
+backend/uploads/
