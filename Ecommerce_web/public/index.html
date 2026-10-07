@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shop</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --ink:#1e2430; --muted:#6c7686; --line:#e3e7ef; --accent:#5b45e0; --danger:#d4483b; --ok:#1f8a5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+  nav { background:var(--accent); color:#fff; padding:12px 24px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  nav .brand { font-weight:700; font-size:1.2rem; margin-right:auto; }
+  nav button { background:transparent; color:#fff; border:0; padding:8px 12px; border-radius:6px; cursor:pointer; font-size:.95rem; }
+  nav button:hover, nav button.on { background:rgba(255,255,255,.2); }
+  main { max-width:1000px; margin:22px auto; padding:0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  h2 { margin:0 0 14px; font-size:1.1rem; }
+  input, select, textarea { padding:9px 10px; border:1px solid var(--line); border-radius:6px; font:inherit; width:100%; background:#fff; }
+  button.b { padding:8px 14px; border:0; border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; font-size:.9rem; }
+  button.b:disabled { opacity:.45; cursor:not-allowed; }
+  button.ghost { background:#eceef6; color:var(--ink); }
+  button.danger { background:var(--danger); }
+  .bar { display:flex; gap:10px; margin-bottom:16px; }
+  .bar input { flex:2; } .bar select { flex:1; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:16px; }
+  .prod { display:flex; flex-direction:column; gap:6px; }
+  .prod .em { font-size:3rem; text-align:center; background:#f0f1fa; border-radius:8px; padding:14px 0; }
+  .prod small { color:var(--muted); }
+  .price { font-weight:700; font-size:1.1rem; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .sp { justify-content:space-between; }
+  .wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:9px 8px; border-bottom:1px solid var(--line); font-size:.9rem; vertical-align:middle; }
+  th { color:var(--muted); font-weight:600; }
+  form.f { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:10px; }
+  .msg { color:var(--danger); font-size:.9rem; min-height:1.2em; margin-top:6px; }
+  .tag { padding:2px 8px; border-radius:999px; font-size:.78rem; background:#eceef6; }
+  .tag.pending { background:#fff2cc; } .tag.shipped { background:#d9e8ff; } .tag.delivered { background:#d7f3e3; } .tag.cancelled { background:#fbdcd8; }
+  .order { margin-bottom:14px; }
+  .muted { color:var(--muted); }
+  #auth { max-width:380px; margin:40px auto; } #auth form { display:grid; gap:10px; }
+  .link { background:none; border:0; color:var(--accent); cursor:pointer; padding:0; margin-top:10px; }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1e2430; color:#fff; padding:10px 18px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  .sec { margin-top:24px; }
+</style>
+</head>
+<body>
+<nav id="nav"></nav>
+<main id="view"></main>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const money = n => '$' + Number(n).toFixed(2);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let token = localStorage.getItem('token'), user = null, cart = [], products = [], editingId = null, current = 'shop', registering = false;
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2200); }
+const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message); } };
+
+// ---------- navigation ----------
+function renderNav() {
+  const count = cart.reduce((s, i) => s + i.quantity, 0);
+  const link = (v, label) => `<button class="${current === v ? 'on' : ''}" onclick="go('${v}')">${label}</button>`;
+  $('#nav').innerHTML = `<span class="brand">🛍️ Shop</span>` + link('shop', 'Products') +
+    (user ? link('cart', `Cart (${count})`) + link('orders', 'My Orders') : '') +
+    (user?.role === 'admin' ? link('admin', 'Admin') : '') +
+    (user ? `<button onclick="logout()">Log out (${esc(user.name)})</button>` : link('auth', 'Log in'));
+}
+function go(v) {
+  if (['cart', 'orders', 'admin'].includes(v) && !user) { toast('Please log in first'); v = 'auth'; }
+  current = v; renderNav(); guard(views[v])();
+}
+async function loadCart() { cart = user ? await api('/api/cart') : []; renderNav(); }
+
+// ---------- auth ----------
+function auth() {
+  $('#view').innerHTML = `<div id="auth" class="card"><h2>${registering ? 'Create account' : 'Log in'}</h2>
+    <form id="af">${registering ? '<input name="name" placeholder="Full name" required>' : ''}
+    <input name="email" type="email" placeholder="Email" required>
+    <input name="password" type="password" placeholder="Password (min 6 chars)" required>
+    <button class="b">${registering ? 'Register' : 'Log in'}</button></form>
+    <div class="msg" id="am"></div>
+    <button class="link" id="tg">${registering ? 'Have an account? Log in' : 'No account? Register'}</button>
+    <p class="muted" style="font-size:.8rem">Demo admin: admin@shop.com / admin123</p></div>`;
+  $('#tg').onclick = () => { registering = !registering; auth(); };
+  $('#af').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const r = await api('/api/auth/' + (registering ? 'register' : 'login'), { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
+      token = r.token; user = r.user; localStorage.setItem('token', token);
+      await loadCart(); go('shop');
+    } catch (err) { $('#am').textContent = err.message; }
+  };
+}
+function logout() { token = null; user = null; cart = []; localStorage.removeItem('token'); go('shop'); }
+
+// ---------- product listing ----------
+async function shop() {
+  const cats = await api('/api/categories');
+  $('#view').innerHTML = `<div class="bar"><input id="q" placeholder="Search products…"><select id="cat"><option value="">All categories</option>${cats.map(c => `<option>${esc(c)}</option>`).join('')}</select></div><div id="grid" class="grid"></div>`;
+  const load = guard(async () => {
+    products = await api(`/api/products?q=${encodeURIComponent($('#q').value)}&category=${encodeURIComponent($('#cat').value)}`);
+    $('#grid').innerHTML = products.length ? products.map(p => `
+      <div class="card prod"><div class="em">${esc(p.emoji)}</div><b>${esc(p.name)}</b>
+      <small>${esc(p.category)} · ${esc(p.description)}</small>
+      <div class="row sp"><span class="price">${money(p.price)}</span><small>${p.stock > 0 ? p.stock + ' in stock' : 'Out of stock'}</small></div>
+      <button class="b" ${p.stock < 1 ? 'disabled' : ''} onclick="addToCart(${p.id})">Add to cart</button></div>`).join('')
+      : '<p class="muted">No products found.</p>';
+  });
+  $('#q').oninput = load; $('#cat').onchange = load; load();
+}
+const addToCart = guard(async id => {
+  if (!user) { toast('Please log in to add items'); return go('auth'); }
+  await api('/api/cart', { method: 'POST', body: JSON.stringify({ productId: id, quantity: 1 }) });
+  await loadCart(); toast('Added to cart');
+});
+
+// ---------- cart ----------
+async function cartView() {
+  await loadCart();
+  const total = cart.reduce((s, i) => s + i.price * i.quantity, 0);
+  $('#view').innerHTML = `<div class="card"><h2>Shopping cart</h2>` + (cart.length ? `<div class="wrap"><table>
+    <thead><tr><th></th><th>Item</th><th>Price</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead><tbody>
+    ${cart.map(i => `<tr><td style="font-size:1.6rem">${esc(i.emoji)}</td><td>${esc(i.name)}</td><td>${money(i.price)}</td>
+      <td><div class="row"><button class="b ghost" onclick="setQty(${i.id},${i.quantity - 1})">−</button>${i.quantity}<button class="b ghost" onclick="setQty(${i.id},${i.quantity + 1})">+</button></div></td>
+      <td>${money(i.price * i.quantity)}</td><td><button class="b danger" onclick="setQty(${i.id},0)">Remove</button></td></tr>`).join('')}
+    </tbody></table></div><div class="row sp" style="margin-top:14px"><span class="price">Total: ${money(total)}</span><button class="b" onclick="checkout()">Place order</button></div>`
+    : '<p class="muted">Your cart is empty.</p>') + '</div>';
+}
+const setQty = guard(async (id, q) => { await api('/api/cart/' + id, { method: 'PUT', body: JSON.stringify({ quantity: q }) }); await cartView(); });
+const checkout = guard(async () => { await api('/api/orders', { method: 'POST' }); toast('Order placed!'); await loadCart(); go('orders'); });
+
+// ---------- orders ----------
+const orderHtml = (o, isAdmin) => `<div class="card order"><div class="row sp"><b>Order #${o.id}${isAdmin ? ' · ' + esc(o.customer) : ''}</b>
+  <span class="muted">${o.created_at}</span></div>
+  <div style="margin:8px 0">${o.items.map(i => `${esc(i.name)} × ${i.quantity} <span class="muted">(${money(i.price)})</span>`).join('<br>')}</div>
+  <div class="row sp"><span><span class="tag ${o.status}">${o.status}</span> &nbsp; <b>${money(o.total)}</b></span>
+  ${isAdmin ? `<select style="width:auto" onchange="setStatus(${o.id}, this.value)">${['pending', 'shipped', 'delivered', 'cancelled'].map(s => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select>`
+    : o.status === 'pending' ? `<button class="b danger" onclick="cancelOrder(${o.id})">Cancel</button>` : ''}</div></div>`;
+
+async function orders() {
+  const list = await api('/api/orders');
+  $('#view').innerHTML = `<h2>My orders</h2>` + (list.length ? list.map(o => orderHtml(o, false)).join('') : '<p class="muted">No orders yet.</p>');
+}
+const cancelOrder = guard(async id => { await api(`/api/orders/${id}/cancel`, { method: 'PUT' }); toast('Order cancelled'); orders(); });
+const setStatus = guard(async (id, status) => { await api(`/api/orders/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }); toast('Status updated'); admin(); });
+
+// ---------- admin ----------
+async function admin() {
+  products = await api('/api/products');
+  const all = await api('/api/orders?all=1');
+  const p = products.find(x => x.id === editingId) || {};
+  $('#view').innerHTML = `<div class="card"><h2>${editingId ? 'Edit product #' + editingId : 'Add product'}</h2>
+    <form class="f" id="pf">
+      <input name="name" placeholder="Name" value="${esc(p.name)}" required>
+      <input name="price" type="number" step="0.01" min="0" placeholder="Price" value="${p.price ?? ''}" required>
+      <input name="stock" type="number" min="0" placeholder="Stock" value="${p.stock ?? ''}" required>
+      <input name="category" placeholder="Category" value="${esc(p.category)}" required>
+      <input name="emoji" placeholder="Emoji icon" value="${esc(p.emoji)}">
+      <input name="description" placeholder="Description" value="${esc(p.description)}">
+      <div class="row"><button class="b">${editingId ? 'Save' : 'Add'}</button>${editingId ? '<button type="button" class="b ghost" onclick="editingId=null;admin()">Cancel</button>' : ''}</div>
+    </form><div class="msg" id="pm"></div></div>
+    <div class="card sec"><h2>Products</h2><div class="wrap"><table><thead><tr><th></th><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th></th></tr></thead><tbody>
+    ${products.map(x => `<tr><td>${esc(x.emoji)}</td><td>${esc(x.name)}</td><td>${esc(x.category)}</td><td>${money(x.price)}</td><td>${x.stock}</td>
+      <td><div class="row"><button class="b ghost" onclick="editingId=${x.id};admin()">Edit</button><button class="b danger" onclick="delProduct(${x.id})">Delete</button></div></td></tr>`).join('')}
+    </tbody></table></div></div>
+    <h2 class="sec">All orders</h2>${all.length ? all.map(o => orderHtml(o, true)).join('') : '<p class="muted">No orders yet.</p>'}`;
+  $('#pf').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await api(editingId ? '/api/products/' + editingId : '/api/products', { method: editingId ? 'PUT' : 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
+      toast(editingId ? 'Product saved' : 'Product added'); editingId = null; admin();
+    } catch (err) { $('#pm').textContent = err.message; }
+  };
+}
+const delProduct = guard(async id => { if (!confirm('Delete this product?')) return; await api('/api/products/' + id, { method: 'DELETE' }); admin(); });
+
+const views = { shop, cart: cartView, orders, admin, auth };
+
+// ---------- boot ----------
+(async () => {
+  if (token) { try { user = await api('/api/auth/me'); await loadCart(); } catch { token = null; localStorage.removeItem('token'); } }
+  go('shop');
+})();
+</script>
+</body>
+</html>

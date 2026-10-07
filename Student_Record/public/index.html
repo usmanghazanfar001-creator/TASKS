@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Student Records</title>
+<style>
+  :root { --bg:#f4f8fc; --card:#fff; --ink:#1c2733; --muted:#6b7a8a; --accent:#2a7de1; --danger:#d64545; --line:#dde5ee; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--accent); color:#fff; padding:18px 24px; font-size:1.25rem; font-weight:600; }
+  main { max-width:960px; margin:24px auto; padding:0 16px; display:grid; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; }
+  h2 { margin:0 0 12px; font-size:1.05rem; }
+  form { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
+  input { padding:9px 10px; border:1px solid var(--line); border-radius:6px; font-size:.95rem; width:100%; }
+  button { padding:9px 14px; border:0; border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; font-size:.9rem; }
+  button.ghost { background:#e8eef5; color:var(--ink); }
+  button.danger { background:var(--danger); }
+  .actions { display:flex; gap:8px; align-items:end; }
+  .bar { display:flex; justify-content:space-between; gap:10px; margin-bottom:12px; }
+  .bar input { max-width:280px; }
+  .wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:10px; border-bottom:1px solid var(--line); font-size:.92rem; white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  td .row { display:flex; gap:6px; }
+  #msg { min-height:1.2em; font-size:.9rem; margin-top:8px; }
+  #msg.err { color:var(--danger); } #msg.ok { color:#1e8a4c; }
+  dialog { border:0; border-radius:10px; padding:22px; min-width:280px; }
+  dialog::backdrop { background:rgba(0,0,0,.35); }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; margin:0 0 14px; }
+  dt { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>🎓 Student Records</header>
+<main>
+  <section class="card">
+    <h2 id="formTitle">Add Student</h2>
+    <form id="form">
+      <input name="name" placeholder="Full name" required>
+      <input name="email" type="email" placeholder="Email" required>
+      <input name="course" placeholder="Course" required>
+      <input name="age" type="number" min="1" max="120" placeholder="Age">
+      <div class="actions">
+        <button type="submit" id="submitBtn">Add</button>
+        <button type="button" class="ghost" id="cancelBtn" hidden>Cancel</button>
+      </div>
+    </form>
+    <div id="msg"></div>
+  </section>
+
+  <section class="card">
+    <div class="bar">
+      <h2>All Students</h2>
+      <input id="search" placeholder="Search name, email, course…">
+    </div>
+    <div class="wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Course</th><th>Age</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<dialog id="details">
+  <h2>Student Details</h2>
+  <dl id="dl"></dl>
+  <button class="ghost" onclick="details.close()">Close</button>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const form = $('#form'), rows = $('#rows'), msg = $('#msg'), details = $('#details');
+let editingId = null;
+
+function say(text, type) { msg.textContent = text; msg.className = type || ''; }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+async function load() {
+  const list = await api('/api/students?q=' + encodeURIComponent($('#search').value));
+  rows.innerHTML = list.length ? list.map(s => `
+    <tr>
+      <td>${s.id}</td><td>${esc(s.name)}</td><td>${esc(s.email)}</td><td>${esc(s.course)}</td><td>${esc(s.age)}</td>
+      <td><div class="row">
+        <button class="ghost" onclick="view(${s.id})">View</button>
+        <button onclick="edit(${s.id})">Edit</button>
+        <button class="danger" onclick="del(${s.id})">Delete</button>
+      </div></td>
+    </tr>`).join('') : '<tr><td colspan="6">No students found.</td></tr>';
+}
+
+form.addEventListener('submit', async e => {
+  e.preventDefault();
+  const body = Object.fromEntries(new FormData(form));
+  try {
+    if (editingId) await api('/api/students/' + editingId, { method: 'PUT', body: JSON.stringify(body) });
+    else await api('/api/students', { method: 'POST', body: JSON.stringify(body) });
+    say(editingId ? 'Student updated.' : 'Student added.', 'ok');
+    reset(); load();
+  } catch (err) { say(err.message, 'err'); }
+});
+
+async function edit(id) {
+  const s = await api('/api/students/' + id);
+  for (const k of ['name', 'email', 'course', 'age']) form.elements[k].value = s[k] ?? '';
+  editingId = id;
+  $('#formTitle').textContent = 'Edit Student #' + id;
+  $('#submitBtn').textContent = 'Save';
+  $('#cancelBtn').hidden = false;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function view(id) {
+  const s = await api('/api/students/' + id);
+  $('#dl').innerHTML = Object.entries({ ID: s.id, Name: s.name, Email: s.email, Course: s.course, Age: s.age ?? '—', Added: s.created_at })
+    .map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
+  details.showModal();
+}
+
+async function del(id) {
+  if (!confirm('Delete this student?')) return;
+  try { await api('/api/students/' + id, { method: 'DELETE' }); say('Student deleted.', 'ok'); load(); }
+  catch (err) { say(err.message, 'err'); }
+}
+
+function reset() {
+  form.reset(); editingId = null;
+  $('#formTitle').textContent = 'Add Student';
+  $('#submitBtn').textContent = 'Add';
+  $('#cancelBtn').hidden = true;
+}
+$('#cancelBtn').onclick = () => { reset(); say(''); };
+$('#search').addEventListener('input', load);
+load();
+</script>
+</body>
+</html>
