@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Portal</title>
+<style>
+  :root { --bg:#f4f7fb; --card:#fff; --ink:#1b2533; --muted:#6a778a; --line:#e0e6ef; --accent:#0e6fd8; --danger:#d0453a; --ok:#1c8a56; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+  nav { background:var(--accent); color:#fff; padding:12px 24px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  nav .brand { font-weight:700; font-size:1.2rem; margin-right:auto; }
+  nav button { background:transparent; color:#fff; border:0; padding:8px 12px; border-radius:6px; cursor:pointer; font-size:.95rem; }
+  nav button:hover, nav button.on { background:rgba(255,255,255,.2); }
+  main { max-width:1000px; margin:22px auto; padding:0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+  h2 { margin:0 0 12px; font-size:1.1rem; } h3 { margin:0 0 4px; }
+  input, select, textarea { padding:9px 10px; border:1px solid var(--line); border-radius:6px; font:inherit; width:100%; background:#fff; }
+  textarea { min-height:90px; resize:vertical; }
+  button.b { padding:8px 14px; border:0; border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; font-size:.88rem; }
+  button.b:disabled { opacity:.45; cursor:not-allowed; }
+  button.ghost { background:#e9eef6; color:var(--ink); } button.danger { background:var(--danger); }
+  .filters { display:grid; grid-template-columns:2fr repeat(4,1fr); gap:10px; margin-bottom:16px; }
+  @media (max-width:760px) { .filters { grid-template-columns:1fr 1fr; } .filters input:first-child { grid-column:1/-1; } }
+  .row { display:flex; gap:8px; align-items:center; } .sp { justify-content:space-between; } .wrap-row { flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:.9rem; }
+  .tag { display:inline-block; padding:2px 9px; border-radius:999px; font-size:.78rem; background:#e9eef6; margin-right:6px; }
+  .tag.applied,.tag.open { background:#dbeafe; } .tag.reviewing { background:#fff2cc; } .tag.shortlisted { background:#e6ddff; }
+  .tag.hired { background:#d7f3e3; } .tag.rejected,.tag.removed { background:#fbdcd8; } .tag.closed { background:#e5e7eb; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:14px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .stat small { color:var(--muted); display:block; } .stat strong { font-size:1.5rem; }
+  .wrap { overflow-x:auto; } table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); font-size:.88rem; vertical-align:middle; }
+  th { color:var(--muted); font-weight:600; }
+  form.f { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }
+  form.f .full { grid-column:1/-1; }
+  .msg { color:var(--danger); font-size:.9rem; min-height:1.2em; margin-top:6px; }
+  #auth { max-width:400px; margin:30px auto; } #auth form { display:grid; gap:10px; }
+  .link { background:none; border:0; color:var(--accent); cursor:pointer; padding:0; margin-top:10px; }
+  dialog { border:0; border-radius:12px; padding:22px; width:min(640px,94vw); max-height:88vh; }
+  dialog::backdrop { background:rgba(0,0,0,.4); }
+  .pager { display:flex; gap:10px; justify-content:center; align-items:center; margin-top:8px; }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1b2533; color:#fff; padding:10px 18px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  .sec { margin-top:22px; } pre { white-space:pre-wrap; font:inherit; margin:6px 0; }
+</style>
+</head>
+<body>
+<nav id="nav"></nav>
+<main id="view"></main>
+<dialog id="dlg"></dialog>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const k = n => n >= 1000 ? Math.round(n / 1000) + 'k' : n;
+const salary = j => j.salary_min || j.salary_max ? '$' + [j.salary_min, j.salary_max].filter(Boolean).map(k).join(' – $') : 'Salary not listed';
+let token = localStorage.getItem('token'), user = null, current = 'jobs', registering = false;
+let F = { q: '', location: '', type: '', category: '', minSalary: '', page: 1 }, appliedIds = new Set(), employerJobs = [], editingId = null;
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+const post = (u, b, m = 'POST') => api(u, { method: m, body: b ? JSON.stringify(b) : undefined });
+function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2200); }
+const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message); } };
+const dlg = html => { $('#dlg').innerHTML = html + '<div style="margin-top:14px"><button class="b ghost" onclick="$(\'#dlg\').close()">Close</button></div>'; if (!$('#dlg').open) $('#dlg').showModal(); };
+
+// ---------- navigation ----------
+function renderNav() {
+  const b = (v, l) => `<button class="${current === v ? 'on' : ''}" onclick="go('${v}')">${l}</button>`;
+  $('#nav').innerHTML = '<span class="brand">💼 JobPortal</span>' + b('jobs', 'Browse jobs') +
+    (user ? b('dash', user.role === 'admin' ? 'Admin dashboard' : user.role === 'employer' ? 'Employer dashboard' : 'My applications') +
+      `<button onclick="logout()">Log out (${esc(user.name)})</button>` : b('auth', 'Log in'));
+}
+function go(v) { if (v === 'dash' && !user) v = 'auth'; current = v; renderNav(); guard(views[v])(); }
+
+// ---------- auth ----------
+function auth() {
+  $('#view').innerHTML = `<div id="auth" class="card"><h2>${registering ? 'Create account' : 'Log in'}</h2>
+    <form id="af">${registering ? `<input name="name" placeholder="Full name" required>
+      <select name="role" id="roleSel"><option value="seeker">I'm looking for a job</option><option value="employer">I'm hiring</option></select>
+      <input name="company" id="coField" placeholder="Company name" hidden>` : ''}
+    <input name="email" type="email" placeholder="Email" required>
+    <input name="password" type="password" placeholder="Password (min 6 chars)" required>
+    <button class="b">${registering ? 'Register' : 'Log in'}</button></form>
+    <div class="msg" id="am"></div>
+    <button class="link" id="tg">${registering ? 'Have an account? Log in' : 'No account? Register'}</button>
+    <p class="muted">Demo logins:<br>admin@jobs.com / admin123<br>employer@jobs.com / employer123<br>seeker@jobs.com / seeker123</p></div>`;
+  $('#tg').onclick = () => { registering = !registering; auth(); };
+  if (registering) $('#roleSel').onchange = e => $('#coField').hidden = e.target.value !== 'employer';
+  $('#af').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const r = await post('/api/auth/' + (registering ? 'register' : 'login'), Object.fromEntries(new FormData(e.target)));
+      token = r.token; user = r.user; localStorage.setItem('token', token); go('dash');
+    } catch (err) { $('#am').textContent = err.message; }
+  };
+}
+function logout() { token = null; user = null; appliedIds = new Set(); localStorage.removeItem('token'); go('jobs'); }
+
+// ---------- job listings: search + filters ----------
+async function jobs() {
+  const meta = await api('/api/jobs/meta');
+  if (user?.role === 'seeker') appliedIds = new Set((await api('/api/applications/mine')).map(a => a.job_id));
+  const opts = (arr, sel) => arr.map(v => `<option ${v === sel ? 'selected' : ''}>${esc(v)}</option>`).join('');
+  $('#view').innerHTML = `<div class="filters">
+    <input id="fq" placeholder="Search title, company, keywords…" value="${esc(F.q)}">
+    <select id="floc"><option value="">Any location</option>${opts(meta.locations, F.location)}</select>
+    <select id="ftype"><option value="">Any type</option>${opts(meta.types, F.type)}</select>
+    <select id="fcat"><option value="">Any category</option>${opts(meta.categories, F.category)}</select>
+    <input id="fsal" type="number" min="0" step="5000" placeholder="Min salary" value="${esc(F.minSalary)}"></div>
+    <div id="list"></div>`;
+  let t;
+  const change = () => { F = { q: $('#fq').value, location: $('#floc').value, type: $('#ftype').value, category: $('#fcat').value, minSalary: $('#fsal').value, page: 1 }; clearTimeout(t); t = setTimeout(guard(loadJobs), 250); };
+  ['#fq', '#floc', '#ftype', '#fcat', '#fsal'].forEach(s => $(s).addEventListener('input', change));
+  await loadJobs();
+}
+async function loadJobs() {
+  const r = await api('/api/jobs?' + new URLSearchParams(F));
+  $('#list').innerHTML = `<p class="muted">${r.total} job${r.total === 1 ? '' : 's'} found</p>` + r.jobs.map(j => `
+    <div class="card"><div class="row sp wrap-row"><div><h3>${esc(j.title)}</h3><div class="muted">${esc(j.company)} · ${esc(j.location)}</div>
+    <div style="margin-top:8px"><span class="tag">${esc(j.type)}</span><span class="tag">${esc(j.category)}</span><span class="muted">${salary(j)}</span></div></div>
+    <button class="b" onclick="openJob(${j.id})">${appliedIds.has(j.id) ? 'Applied ✓' : 'View & apply'}</button></div></div>`).join('') +
+    (r.pages > 1 ? `<div class="pager"><button class="b ghost" ${r.page <= 1 ? 'disabled' : ''} onclick="page(${r.page - 1})">← Prev</button>
+      <span class="muted">Page ${r.page} of ${r.pages}</span><button class="b ghost" ${r.page >= r.pages ? 'disabled' : ''} onclick="page(${r.page + 1})">Next →</button></div>` : '');
+}
+const page = guard(async p => { F.page = p; await loadJobs(); window.scrollTo(0, 0); });
+
+const openJob = guard(async id => {
+  const j = await api('/api/jobs/' + id);
+  const action = !user ? '<p class="muted">Log in as a job seeker to apply.</p>'
+    : user.role !== 'seeker' ? '<p class="muted">Only job seekers can apply.</p>'
+    : appliedIds.has(id) ? '<p><span class="tag hired">Already applied ✓</span></p>'
+    : `<textarea id="cl" placeholder="Cover letter (optional)"></textarea><div class="msg" id="cm"></div><button class="b" onclick="apply(${id})">Submit application</button>`;
+  dlg(`<h2>${esc(j.title)}</h2><div class="muted">${esc(j.company)} · ${esc(j.location)}</div>
+    <div style="margin:10px 0"><span class="tag">${esc(j.type)}</span><span class="tag">${esc(j.category)}</span><span class="muted">${salary(j)}</span></div>
+    <pre>${esc(j.description)}</pre>${action}`);
+});
+async function apply(id) {
+  try { await post(`/api/jobs/${id}/apply`, { coverLetter: $('#cl').value }); appliedIds.add(id); $('#dlg').close(); toast('Application submitted!'); loadJobs(); }
+  catch (e) { $('#cm').textContent = e.message; }
+}
+
+// ---------- dashboards ----------
+const stat = (l, v) => `<div class="stat"><small>${l}</small><strong>${v}</strong></div>`;
+const dash = () => ({ seeker: seekerDash, employer: employerDash, admin: adminDash })[user.role]();
+
+async function seekerDash() {
+  const apps = await api('/api/applications/mine');
+  const n = s => apps.filter(a => a.status === s).length;
+  $('#view').innerHTML = `<div class="stats">${stat('Applied', apps.length)}${stat('In review', n('reviewing'))}${stat('Shortlisted', n('shortlisted'))}${stat('Hired', n('hired'))}</div>
+    <div class="card"><h2>My applications</h2>${apps.length ? `<div class="wrap"><table><thead><tr><th>Job</th><th>Company</th><th>Status</th><th>Date</th><th></th></tr></thead><tbody>
+    ${apps.map(a => `<tr><td>${esc(a.title)}</td><td>${esc(a.company)}</td><td><span class="tag ${a.status}">${a.status}</span></td><td>${a.created_at.slice(0, 10)}</td>
+    <td>${a.status === 'applied' ? `<button class="b danger" onclick="withdraw(${a.id})">Withdraw</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+      : '<p class="muted">You haven\'t applied to any jobs yet. Browse jobs to get started.</p>'}</div>`;
+}
+const withdraw = guard(async id => { if (!confirm('Withdraw this application?')) return; await post('/api/applications/' + id, null, 'DELETE'); go('dash'); });
+
+async function employerDash() {
+  employerJobs = await api('/api/employer/jobs');
+  const j = employerJobs.find(x => x.id === editingId) || { company: user.company };
+  const types = ['Full-time', 'Part-time', 'Contract', 'Internship', 'Remote'];
+  $('#view').innerHTML = `<div class="stats">${stat('Jobs posted', employerJobs.length)}${stat('Open', employerJobs.filter(x => x.status === 'open').length)}${stat('Total applicants', employerJobs.reduce((s, x) => s + x.applicants, 0))}</div>
+    <div class="card"><h2>${editingId ? 'Edit job' : 'Post a job'}</h2><form class="f" id="jf">
+      <input name="title" placeholder="Job title" value="${esc(j.title)}" required>
+      <input name="company" placeholder="Company" value="${esc(j.company)}" required>
+      <input name="location" placeholder="Location" value="${esc(j.location)}" required>
+      <select name="type">${types.map(t => `<option ${t === j.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      <input name="category" placeholder="Category (e.g. Engineering)" value="${esc(j.category)}" required>
+      <input name="salary_min" type="number" min="0" placeholder="Min salary / year" value="${j.salary_min ?? ''}">
+      <input name="salary_max" type="number" min="0" placeholder="Max salary / year" value="${j.salary_max ?? ''}">
+      <textarea class="full" name="description" placeholder="Job description" required>${esc(j.description)}</textarea>
+      <div class="full row"><button class="b">${editingId ? 'Save changes' : 'Post job'}</button>${editingId ? '<button type="button" class="b ghost" onclick="editingId=null;go(\'dash\')">Cancel</button>' : ''}</div>
+    </form><div class="msg" id="jm"></div></div>
+    <div class="card"><h2>My job postings</h2>${employerJobs.length ? `<div class="wrap"><table><thead><tr><th>Title</th><th>Location</th><th>Status</th><th>Applicants</th><th></th></tr></thead><tbody>
+    ${employerJobs.map(x => `<tr><td>${esc(x.title)}</td><td>${esc(x.location)}</td><td><span class="tag ${x.status}">${x.status}</span></td><td>${x.applicants}</td>
+    <td><div class="row wrap-row"><button class="b" onclick="applicants(${x.id})">Applicants</button><button class="b ghost" onclick="editingId=${x.id};go('dash')">Edit</button>
+    ${x.status !== 'removed' ? `<button class="b ghost" onclick="toggleJob(${x.id},'${x.status === 'open' ? 'closed' : 'open'}')">${x.status === 'open' ? 'Close' : 'Reopen'}</button>` : ''}
+    <button class="b danger" onclick="delJob(${x.id})">Delete</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No postings yet.</p>'}</div>`;
+  $('#jf').onsubmit = async e => {
+    e.preventDefault();
+    try { await post(editingId ? '/api/jobs/' + editingId : '/api/jobs', Object.fromEntries(new FormData(e.target)), editingId ? 'PUT' : 'POST'); toast(editingId ? 'Job updated' : 'Job posted'); editingId = null; go('dash'); }
+    catch (err) { $('#jm').textContent = err.message; }
+  };
+}
+const toggleJob = guard(async (id, status) => { await post(`/api/jobs/${id}/status`, { status }, 'PUT'); go('dash'); });
+const delJob = guard(async id => { if (!confirm('Delete this job and its applications?')) return; await post('/api/jobs/' + id, null, 'DELETE'); go('dash'); });
+
+const applicants = guard(async id => {
+  const list = await api(`/api/jobs/${id}/applications`);
+  dlg(`<h2>Applicants</h2>` + (list.length ? list.map(a => `<div class="card"><div class="row sp"><b>${esc(a.name)}</b>
+    <select style="width:auto" onchange="setAppStatus(${a.id}, this.value)">${['applied', 'reviewing', 'shortlisted', 'rejected', 'hired'].map(s => `<option ${s === a.status ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+    <div class="muted">${esc(a.email)} · ${a.created_at.slice(0, 10)}</div><pre>${esc(a.cover_letter) || '<i class="muted">No cover letter</i>'}</pre></div>`).join('') : '<p class="muted">No applicants yet.</p>'));
+});
+const setAppStatus = guard(async (id, status) => { await post(`/api/applications/${id}/status`, { status }, 'PUT'); toast('Status updated'); });
+
+async function adminDash() {
+  const [s, users, allJobs] = await Promise.all([api('/api/admin/stats'), api('/api/admin/users'), api('/api/admin/jobs')]);
+  $('#view').innerHTML = `<div class="stats">${stat('Job seekers', s.seekers)}${stat('Employers', s.employers)}${stat('Open jobs', s.openJobs)}${stat('Applications', s.applications)}</div>
+    <div class="card"><h2>Open jobs by category</h2>${s.byCategory.map(c => `<span class="tag">${esc(c.category)}: ${c.n}</span>`).join('') || '<span class="muted">None</span>'}</div>
+    <div class="card"><h2>Users</h2><div class="wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>
+    ${users.map(u => `<tr><td>${esc(u.name)}${u.company ? ' · ' + esc(u.company) : ''}</td><td>${esc(u.email)}</td><td>${u.role}</td>
+    <td><span class="tag ${u.active ? 'hired' : 'rejected'}">${u.active ? 'active' : 'deactivated'}</span></td>
+    <td>${u.role === 'admin' ? '' : `<div class="row"><button class="b ghost" onclick="setActive(${u.id},${u.active ? 'false' : 'true'})">${u.active ? 'Deactivate' : 'Activate'}</button><button class="b danger" onclick="delUser(${u.id})">Delete</button></div>`}</td></tr>`).join('')}</tbody></table></div></div>
+    <div class="card"><h2>All job postings</h2><div class="wrap"><table><thead><tr><th>Title</th><th>Employer</th><th>Status</th><th>Applicants</th><th></th></tr></thead><tbody>
+    ${allJobs.map(j => `<tr><td>${esc(j.title)}</td><td>${esc(j.employer_name)}</td><td><span class="tag ${j.status}">${j.status}</span></td><td>${j.applicants}</td>
+    <td><button class="b ${j.status === 'removed' ? 'ghost' : 'danger'}" onclick="adminJob(${j.id},'${j.status === 'removed' ? 'open' : 'removed'}')">${j.status === 'removed' ? 'Restore' : 'Remove'}</button></td></tr>`).join('')}</tbody></table></div></div>`;
+}
+const setActive = guard(async (id, active) => { await post(`/api/admin/users/${id}/active`, { active }, 'PUT'); go('dash'); });
+const delUser = guard(async id => { if (!confirm('Delete this user and all their data?')) return; await post('/api/admin/users/' + id, null, 'DELETE'); go('dash'); });
+const adminJob = guard(async (id, status) => { await post(`/api/admin/jobs/${id}/status`, { status }, 'PUT'); go('dash'); });
+
+const views = { jobs, auth, dash };
+
+// ---------- boot ----------
+(async () => {
+  if (token) { try { user = await api('/api/auth/me'); } catch { token = null; localStorage.removeItem('token'); } }
+  go('jobs');
+})();
+</script>
+</body>
+</html>
