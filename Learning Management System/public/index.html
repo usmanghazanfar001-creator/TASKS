@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LMS</title>
+<style>
+  :root { --bg:#f4f8f7; --card:#fff; --ink:#1a2a2a; --muted:#66787a; --line:#dde7e6; --accent:#0f766e; --danger:#d0453a; --ok:#1c8a56; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+  nav { background:var(--accent); color:#fff; padding:12px 24px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  nav .brand { font-weight:700; font-size:1.2rem; margin-right:auto; }
+  nav button { background:transparent; color:#fff; border:0; padding:8px 12px; border-radius:6px; cursor:pointer; font-size:.95rem; }
+  nav button:hover, nav button.on { background:rgba(255,255,255,.2); }
+  main { max-width:980px; margin:22px auto; padding:0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+  h2 { margin:0 0 12px; font-size:1.1rem; } h3 { margin:0 0 4px; }
+  input, select, textarea { padding:9px 10px; border:1px solid var(--line); border-radius:6px; font:inherit; width:100%; background:#fff; margin-bottom:8px; }
+  textarea { min-height:80px; resize:vertical; }
+  button.b { padding:8px 14px; border:0; border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; font-size:.88rem; }
+  button.b:disabled { opacity:.45; cursor:not-allowed; }
+  button.ghost { background:#e6eeed; color:var(--ink); } button.danger { background:var(--danger); }
+  .row { display:flex; gap:8px; align-items:center; } .sp { justify-content:space-between; } .wrap-row { flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:.9rem; }
+  .tag { display:inline-block; padding:2px 9px; border-radius:999px; font-size:.78rem; background:#e6eeed; margin-right:6px; }
+  .tag.ok { background:#d7f3e3; } .tag.warn { background:#fff2cc; } .tag.no { background:#fbdcd8; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:14px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .stat small { color:var(--muted); display:block; } .stat strong { font-size:1.5rem; }
+  .prog { background:#e3ecea; border-radius:6px; height:10px; overflow:hidden; min-width:100px; }
+  .prog div { background:var(--ok); height:100%; }
+  .wrap { overflow-x:auto; } table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); font-size:.88rem; vertical-align:middle; }
+  th { color:var(--muted); font-weight:600; }
+  form.f { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:0 10px; } form.f .full { grid-column:1/-1; }
+  .msg { color:var(--danger); font-size:.9rem; min-height:1.2em; margin-bottom:6px; }
+  #auth { max-width:400px; margin:30px auto; }
+  .link { background:none; border:0; color:var(--accent); cursor:pointer; padding:0; margin-top:10px; }
+  dialog { border:0; border-radius:12px; padding:22px; width:min(680px,94vw); max-height:88vh; }
+  dialog::backdrop { background:rgba(0,0,0,.4); }
+  details { border-top:1px solid var(--line); padding:8px 0; } summary { cursor:pointer; font-weight:600; }
+  pre { white-space:pre-wrap; font:inherit; margin:8px 0; }
+  label.opt { display:block; padding:6px 0; cursor:pointer; } label.opt input { width:auto; margin:0 8px 0 0; }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1a2a2a; color:#fff; padding:10px 18px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #toast.show { opacity:1; }
+  .sec { margin-top:22px; }
+</style>
+</head>
+<body>
+<nav id="nav"></nav>
+<main id="view"></main>
+<dialog id="dlg"></dialog>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let token = localStorage.getItem('token'), user = null, current = 'catalog', registering = false, editingId = null, cid = null;
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+const post = (u, b, m = 'POST') => api(u, { method: m, body: b ? JSON.stringify(b) : undefined });
+function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2200); }
+const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message); } };
+const dlg = html => { $('#dlg').innerHTML = html + '<div style="margin-top:14px"><button class="b ghost" onclick="$(\'#dlg\').close()">Close</button></div>'; if (!$('#dlg').open) $('#dlg').showModal(); };
+$('#dlg').addEventListener('close', () => { if (current === 'course' && cid) openCourse(cid); });
+const bar = p => `<div class="prog"><div style="width:${p}%"></div></div>`;
+const stat = (l, v) => `<div class="stat"><small>${l}</small><strong>${v}</strong></div>`;
+
+// ---------- navigation ----------
+function renderNav() {
+  const b = (v, l) => `<button class="${current === v ? 'on' : ''}" onclick="go('${v}')">${l}</button>`;
+  $('#nav').innerHTML = '<span class="brand">🎓 LMS</span>' + b('catalog', 'Courses') +
+    (user ? b('dash', 'Dashboard') + `<button onclick="logout()">Log out (${esc(user.name)})</button>` : b('auth', 'Log in'));
+}
+function go(v) { if (v === 'dash' && !user) v = 'auth'; current = v; cid = null; renderNav(); guard(views[v])(); }
+const openCourse = id => { current = 'course'; cid = id; renderNav(); guard(courseView)(id); };
+
+// ---------- auth ----------
+function auth() {
+  $('#view').innerHTML = `<div id="auth" class="card"><h2>${registering ? 'Create account' : 'Log in'}</h2>
+    <form id="af">${registering ? `<input name="name" placeholder="Full name" required>
+      <select name="role"><option value="student">I'm a student</option><option value="instructor">I'm an instructor</option></select>` : ''}
+    <input name="email" type="email" placeholder="Email" required>
+    <input name="password" type="password" placeholder="Password (min 6 chars)" required>
+    <button class="b">${registering ? 'Register' : 'Log in'}</button></form>
+    <div class="msg" id="am"></div>
+    <button class="link" id="tg">${registering ? 'Have an account? Log in' : 'No account? Register'}</button>
+    <p class="muted">Demo logins:<br>admin@lms.com / admin123<br>instructor@lms.com / instructor123<br>student@lms.com / student123</p></div>`;
+  $('#tg').onclick = () => { registering = !registering; auth(); };
+  $('#af').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      const r = await post('/api/auth/' + (registering ? 'register' : 'login'), Object.fromEntries(new FormData(e.target)));
+      token = r.token; user = r.user; localStorage.setItem('token', token); go('dash');
+    } catch (err) { $('#am').textContent = err.message; }
+  };
+}
+function logout() { token = null; user = null; localStorage.removeItem('token'); go('catalog'); }
+
+// ---------- course catalog ----------
+async function catalog() {
+  $('#view').innerHTML = `<input id="cq" placeholder="Search courses…"><div id="clist"></div>`;
+  const load = guard(async () => {
+    const list = await api('/api/courses?q=' + encodeURIComponent($('#cq').value));
+    $('#clist').innerHTML = list.length ? list.map(c => `<div class="card"><div class="row sp wrap-row"><div>
+      <h3>${esc(c.title)}</h3><div class="muted">by ${esc(c.instructor_name)}</div><p>${esc(c.description)}</p>
+      <span class="tag">${esc(c.category)}</span><span class="muted">${c.lesson_count} lessons · ${c.student_count} students</span></div>
+      <div>${c.enrolled ? '<span class="tag ok">Enrolled ✓</span> ' : ''}<button class="b" onclick="openCourse(${c.id})">${c.enrolled ? 'Continue' : 'View course'}</button></div></div></div>`).join('')
+      : '<p class="muted">No courses found.</p>';
+  });
+  let t; $('#cq').oninput = () => { clearTimeout(t); t = setTimeout(load, 250); };
+  load();
+}
+
+// ---------- course page ----------
+async function courseView(id) {
+  const d = await api('/api/courses/' + id), c = d.course, owner = d.isOwner, student = user?.role === 'student';
+  const canSee = owner || d.enrolled || user?.role === 'admin';
+  const pr = d.progress;
+  $('#view').innerHTML = `<div class="card"><div class="row sp wrap-row"><div><h2 style="margin:0">${esc(c.title)}</h2>
+    <div class="muted">by ${esc(c.instructor_name)} · <span class="tag">${esc(c.category)}</span>${c.published ? '' : '<span class="tag warn">Draft</span>'}</div></div>
+    <div class="row">${owner ? `<button class="b ghost" onclick="studentsList(${id})">Students</button>` : ''}
+    ${student && !d.enrolled ? `<button class="b" onclick="enroll(${id})">Enroll</button>` : ''}
+    ${!user ? '<span class="muted">Log in as a student to enroll</span>' : ''}</div></div>
+    <p>${esc(c.description)}</p>
+    ${pr ? `<div class="row"><div style="flex:1">${bar(pr.percent)}</div><b>${pr.percent}%</b></div>
+      <div class="muted">Lessons ${pr.lessons.done}/${pr.lessons.total} · Quizzes passed ${pr.quizzes.done}/${pr.quizzes.total} · Assignments submitted ${pr.assignments.done}/${pr.assignments.total}</div>` : ''}</div>
+
+    <div class="card"><h2>Lessons</h2>${d.lessons.length ? d.lessons.map((l, i) => canSee ? `<details><summary>${i + 1}. ${esc(l.title)} ${l.completed ? '<span class="tag ok">Done</span>' : ''}</summary>
+      <pre>${esc(l.content)}</pre><div class="row">
+      ${d.enrolled ? `<button class="b ${l.completed ? 'ghost' : ''}" onclick="toggleLesson(${l.id},${!l.completed})">${l.completed ? 'Mark incomplete' : 'Mark complete'}</button>` : ''}
+      ${owner ? `<button class="b danger" onclick="delItem('/api/lessons/${l.id}','Delete this lesson?')">Delete</button>` : ''}</div></details>`
+      : `<div style="padding:6px 0">${i + 1}. ${esc(l.title)}</div>`).join('') + (canSee ? '' : '<p class="muted">Enroll to unlock lesson content.</p>') : '<p class="muted">No lessons yet.</p>'}
+    ${owner ? `<div class="sec"><h3>Add lesson</h3><input id="lt" placeholder="Lesson title"><textarea id="lc" placeholder="Lesson content"></textarea><button class="b" onclick="addLesson(${id})">Add lesson</button></div>` : ''}</div>
+
+    <div class="card"><div class="row sp"><h2>Quizzes</h2>${owner ? `<button class="b" onclick="quizBuilder(${id})">+ New quiz</button>` : ''}</div>
+    ${d.quizzes.length ? `<div class="wrap"><table><tbody>${d.quizzes.map(q => `<tr><td><b>${esc(q.title)}</b><div class="muted">${q.questions} questions · pass mark ${q.pass_mark}%</div></td>
+      <td>${q.best ? `Best: ${q.best.score}/${q.best.total}` : ''}</td><td style="text-align:right">
+      ${d.enrolled ? `<button class="b" onclick="takeQuiz(${q.id})">${q.best ? 'Retake' : 'Take quiz'}</button>` : ''}
+      ${owner ? `<button class="b danger" onclick="delItem('/api/quizzes/${q.id}','Delete this quiz?')">Delete</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No quizzes yet.</p>'}</div>
+
+    <div class="card"><h2>Assignments</h2>${d.assignments.length ? d.assignments.map(a => `<div style="border-top:1px solid var(--line);padding:10px 0">
+      <div class="row sp wrap-row"><div><b>${esc(a.title)}</b> <span class="muted">${a.max_points} pts${a.due_date ? ' · due ' + a.due_date : ''}</span>
+      ${canSee ? `<div class="muted">${esc(a.description)}</div>` : ''}</div>
+      <div class="row">
+      ${d.enrolled ? (a.submission?.grade != null ? `<span class="tag ok">Graded ${a.submission.grade}/${a.max_points}</span>`
+        : `${a.submission ? '<span class="tag warn">Submitted</span>' : ''}<button class="b" onclick="submitAssignment(${a.id})">${a.submission ? 'Edit submission' : 'Submit'}</button>`) : ''}
+      ${owner ? `<button class="b ghost" onclick="viewSubmissions(${a.id})">Submissions (${a.submissions})</button><button class="b danger" onclick="delItem('/api/assignments/${a.id}','Delete this assignment?')">Delete</button>` : ''}</div></div>
+      ${a.submission?.feedback ? `<div class="muted">Feedback: ${esc(a.submission.feedback)}</div>` : ''}</div>`).join('') : '<p class="muted">No assignments yet.</p>'}
+    ${owner ? `<div class="sec"><h3>Add assignment</h3><form class="f" id="asf"><input name="title" placeholder="Title" required>
+      <input name="max_points" type="number" min="1" placeholder="Max points (default 100)"><input name="due_date" type="date">
+      <textarea class="full" name="description" placeholder="Instructions"></textarea><div class="full"><button class="b">Add assignment</button></div></form></div>` : ''}</div>`;
+  if (owner) $('#asf').onsubmit = guard(async e => { e.preventDefault(); await post(`/api/courses/${id}/assignments`, Object.fromEntries(new FormData(e.target))); toast('Assignment added'); openCourse(id); });
+}
+const enroll = guard(async id => { await post(`/api/courses/${id}/enroll`); toast('Enrolled!'); openCourse(id); });
+const toggleLesson = guard(async (id, completed) => { await post(`/api/lessons/${id}/complete`, { completed }, 'PUT'); openCourse(cid); });
+const addLesson = guard(async id => { await post(`/api/courses/${id}/lessons`, { title: $('#lt').value, content: $('#lc').value }); toast('Lesson added'); openCourse(id); });
+const delItem = guard(async (url, msg) => { if (!confirm(msg)) return; await post(url, null, 'DELETE'); openCourse(cid); });
+
+// ---------- quizzes ----------
+const takeQuiz = guard(async id => {
+  const q = await api('/api/quizzes/' + id);
+  dlg(`<h2>${esc(q.title)}</h2><form id="qf">${q.questions.map((x, i) => `<div class="card"><b>${i + 1}. ${esc(x.text)}</b>
+    ${x.options.map((o, j) => `<label class="opt"><input type="radio" name="q${i}" value="${j}" required>${esc(o)}</label>`).join('')}</div>`).join('')}
+    <button class="b">Submit answers</button></form><div id="qr"></div>`);
+  $('#qf').onsubmit = async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target), answers = q.questions.map((_, i) => +fd.get('q' + i));
+    try {
+      const r = await post(`/api/quizzes/${id}/attempt`, { answers });
+      $('#qr').innerHTML = `<div class="card"><h3>${r.score}/${r.total} — ${r.passed ? 'Passed 🎉' : 'Not passed yet, try again'}</h3>
+        <p class="muted">${r.results.map((v, i) => `Q${i + 1}: ${v ? '✓' : '✗'}`).join(' · ')}</p></div>`;
+    } catch (err) { toast(err.message); }
+  };
+});
+
+function quizBuilder(id) {
+  dlg(`<h2>New quiz</h2><input id="qt" placeholder="Quiz title"><input id="qp" type="number" min="0" max="100" value="60" title="Pass mark %" placeholder="Pass mark %">
+    <div id="qs"></div><button class="b ghost" onclick="addQ()">+ Add question</button>
+    <div class="msg" id="qm"></div><button class="b" onclick="saveQuiz(${id})">Save quiz</button>`);
+  addQ();
+}
+function addQ() {
+  const n = $('#qs').children.length + 1, d = document.createElement('div');
+  d.className = 'card qb';
+  d.innerHTML = `<input class="qtext" placeholder="Question ${n}">` +
+    [1, 2, 3, 4].map(i => `<input class="qopt" placeholder="Option ${i}${i > 2 ? ' (optional)' : ''}">`).join('') +
+    `<select class="qcor">${[1, 2, 3, 4].map(i => `<option value="${i - 1}">Correct answer: option ${i}</option>`).join('')}</select>`;
+  $('#qs').appendChild(d);
+}
+async function saveQuiz(id) {
+  const questions = [...document.querySelectorAll('.qb')].map(b => {
+    const opts = [...b.querySelectorAll('.qopt')].map(i => i.value.trim()), cor = +b.querySelector('.qcor').value, options = [];
+    let correct = -1;
+    opts.forEach((v, i) => { if (v) { if (i === cor) correct = options.length; options.push(v); } });
+    return { text: b.querySelector('.qtext').value, options, correct };
+  });
+  try {
+    await post(`/api/courses/${id}/quizzes`, { title: $('#qt').value, pass_mark: +$('#qp').value, questions });
+    toast('Quiz created'); $('#dlg').close();
+  } catch (e) { $('#qm').textContent = e.message; }
+}
+
+// ---------- assignments ----------
+const submitAssignment = guard(async id => {
+  dlg(`<h2>Submit assignment</h2><textarea id="sc" style="min-height:160px" placeholder="Write or paste your work here"></textarea><div class="msg" id="sm"></div><button class="b" onclick="sendSubmission(${id})">Submit</button>`);
+});
+async function sendSubmission(id) {
+  try { await post(`/api/assignments/${id}/submit`, { content: $('#sc').value }); toast('Submitted!'); $('#dlg').close(); }
+  catch (e) { $('#sm').textContent = e.message; }
+}
+const viewSubmissions = guard(async id => {
+  const r = await api(`/api/assignments/${id}/submissions`);
+  dlg(`<h2>${esc(r.assignment.title)} — submissions</h2>` + (r.submissions.length ? r.submissions.map(s => `<div class="card">
+    <div class="row sp"><b>${esc(s.name)}</b><span class="muted">${esc(s.email)} · ${s.created_at.slice(0, 10)}</span></div><pre>${esc(s.content)}</pre>
+    <div class="row wrap-row"><input id="g${s.id}" type="number" min="0" max="${r.assignment.max_points}" step="0.5" placeholder="Grade / ${r.assignment.max_points}" value="${s.grade ?? ''}" style="width:130px;margin:0">
+    <input id="f${s.id}" placeholder="Feedback" value="${esc(s.feedback)}" style="flex:1;margin:0"><button class="b" onclick="gradeSub(${s.id})">Save grade</button></div></div>`).join('') : '<p class="muted">No submissions yet.</p>'));
+});
+const gradeSub = guard(async id => { await post(`/api/submissions/${id}/grade`, { grade: $('#g' + id).value, feedback: $('#f' + id).value }, 'PUT'); toast('Grade saved'); });
+const studentsList = guard(async id => {
+  const list = await api(`/api/courses/${id}/students`);
+  dlg(`<h2>Enrolled students</h2>` + (list.length ? `<div class="wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Progress</th></tr></thead><tbody>
+    ${list.map(s => `<tr><td>${esc(s.name)}</td><td>${esc(s.email)}</td><td><div class="row">${bar(s.progress.percent)}<b>${s.progress.percent}%</b></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No students yet.</p>'));
+});
+
+// ---------- dashboards ----------
+const dash = () => ({ student: studentDash, instructor: instructorDash, admin: adminDash })[user.role]();
+
+async function studentDash() {
+  const d = await api('/api/student/dashboard');
+  const avg = d.courses.length ? Math.round(d.courses.reduce((s, c) => s + c.progress.percent, 0) / d.courses.length) : 0;
+  $('#view').innerHTML = `<div class="stats">${stat('Enrolled courses', d.courses.length)}${stat('Average progress', avg + '%')}${stat('Assignments to do', d.pending.length)}${stat('Graded', d.grades.length)}</div>
+    <div class="card"><h2>My courses</h2>${d.courses.length ? d.courses.map(c => `<div class="row sp wrap-row" style="padding:8px 0;border-top:1px solid var(--line)">
+      <div style="min-width:200px"><b>${esc(c.title)}</b><div class="muted">${esc(c.instructor_name)}</div></div>
+      <div class="row" style="flex:1;min-width:180px">${bar(c.progress.percent)}<b>${c.progress.percent}%</b></div>
+      <button class="b" onclick="openCourse(${c.id})">Continue</button></div>`).join('') : '<p class="muted">You are not enrolled in any course yet. Browse the Courses tab.</p>'}</div>
+    <div class="card"><h2>Assignments to do</h2>${d.pending.length ? d.pending.map(a => `<div class="row sp" style="padding:6px 0"><span><b>${esc(a.title)}</b> <span class="muted">${esc(a.course_title)}${a.due_date ? ' · due ' + a.due_date : ''}</span></span>
+      <button class="b ghost" onclick="openCourse(${a.course_id})">Open</button></div>`).join('') : '<p class="muted">Nothing pending 🎉</p>'}</div>
+    <div class="card"><h2>Recent grades</h2>${d.grades.length ? d.grades.map(g => `<div style="padding:6px 0"><b>${esc(g.title)}</b> <span class="tag ok">${g.grade}/${g.max_points}</span>
+      <span class="muted">${esc(g.course_title)}${g.feedback ? ' · ' + esc(g.feedback) : ''}</span></div>`).join('') : '<p class="muted">No graded work yet.</p>'}</div>`;
+}
+
+async function instructorDash() {
+  const list = await api('/api/instructor/courses'), c = list.find(x => x.id === editingId) || {};
+  $('#view').innerHTML = `<div class="stats">${stat('Courses', list.length)}${stat('Students', list.reduce((s, x) => s + x.students, 0))}${stat('To grade', list.reduce((s, x) => s + x.pending, 0))}</div>
+    <div class="card"><h2>${editingId ? 'Edit course' : 'Create a course'}</h2><form class="f" id="cf">
+      <input name="title" placeholder="Course title" value="${esc(c.title)}" required><input name="category" placeholder="Category" value="${esc(c.category)}" required>
+      <textarea class="full" name="description" placeholder="Description" required>${esc(c.description)}</textarea>
+      <div class="full row"><button class="b">${editingId ? 'Save changes' : 'Create course'}</button>${editingId ? '<button type="button" class="b ghost" onclick="editingId=null;go(\'dash\')">Cancel</button>' : ''}</div></form><div class="msg" id="cm"></div></div>
+    <div class="card"><h2>My courses</h2>${list.length ? `<div class="wrap"><table><thead><tr><th>Title</th><th>Status</th><th>Students</th><th>To grade</th><th></th></tr></thead><tbody>
+    ${list.map(x => `<tr><td>${esc(x.title)}</td><td><span class="tag ${x.published ? 'ok' : 'warn'}">${x.published ? 'Published' : 'Draft'}</span></td><td>${x.students}</td><td>${x.pending}</td>
+    <td><div class="row wrap-row"><button class="b" onclick="openCourse(${x.id})">Manage</button><button class="b ghost" onclick="editingId=${x.id};go('dash')">Edit</button>
+    <button class="b ghost" onclick="setPub(${x.id},${x.published ? 'false' : 'true'})">${x.published ? 'Unpublish' : 'Publish'}</button>
+    <button class="b danger" onclick="delCourse(${x.id})">Delete</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No courses yet.</p>'}</div>`;
+  $('#cf').onsubmit = async e => {
+    e.preventDefault();
+    try { await post(editingId ? '/api/courses/' + editingId : '/api/courses', Object.fromEntries(new FormData(e.target)), editingId ? 'PUT' : 'POST'); toast('Saved'); editingId = null; go('dash'); }
+    catch (err) { $('#cm').textContent = err.message; }
+  };
+}
+const setPub = guard(async (id, published) => { await post(`/api/courses/${id}/publish`, { published }, 'PUT'); go('dash'); });
+const delCourse = guard(async id => { if (!confirm('Delete this course and all its content?')) return; await post('/api/courses/' + id, null, 'DELETE'); go('dash'); });
+
+async function adminDash() {
+  const [s, users, courses] = await Promise.all([api('/api/admin/stats'), api('/api/admin/users'), api('/api/admin/courses')]);
+  $('#view').innerHTML = `<div class="stats">${stat('Students', s.students)}${stat('Instructors', s.instructors)}${stat('Courses', s.published + '/' + s.courses)}${stat('Enrollments', s.enrollments)}</div>
+    <div class="card"><h2>Users</h2><div class="wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>
+    ${users.map(u => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${u.role}</td><td><span class="tag ${u.active ? 'ok' : 'no'}">${u.active ? 'active' : 'deactivated'}</span></td>
+    <td>${u.role === 'admin' ? '' : `<div class="row"><button class="b ghost" onclick="setActive(${u.id},${u.active ? 'false' : 'true'})">${u.active ? 'Deactivate' : 'Activate'}</button><button class="b danger" onclick="delUser(${u.id})">Delete</button></div>`}</td></tr>`).join('')}</tbody></table></div></div>
+    <div class="card"><h2>Courses</h2><div class="wrap"><table><thead><tr><th>Title</th><th>Instructor</th><th>Status</th><th>Students</th><th></th></tr></thead><tbody>
+    ${courses.map(c => `<tr><td>${esc(c.title)}</td><td>${esc(c.instructor_name)}</td><td><span class="tag ${c.published ? 'ok' : 'warn'}">${c.published ? 'Published' : 'Draft'}</span></td><td>${c.students}</td>
+    <td><div class="row"><button class="b ghost" onclick="setPub(${c.id},${c.published ? 'false' : 'true'})">${c.published ? 'Unpublish' : 'Publish'}</button><button class="b danger" onclick="delCourse(${c.id})">Delete</button></div></td></tr>`).join('')}</tbody></table></div></div>`;
+}
+const setActive = guard(async (id, active) => { await post(`/api/admin/users/${id}/active`, { active }, 'PUT'); go('dash'); });
+const delUser = guard(async id => { if (!confirm('Delete this user and all their data?')) return; await post('/api/admin/users/' + id, null, 'DELETE'); go('dash'); });
+
+const views = { catalog, auth, dash };
+
+// ---------- boot ----------
+(async () => {
+  if (token) { try { user = await api('/api/auth/me'); } catch { token = null; localStorage.removeItem('token'); } }
+  go('catalog');
+})();
+</script>
+</body>
+</html>
